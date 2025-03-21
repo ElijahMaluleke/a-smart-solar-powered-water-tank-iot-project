@@ -1,5 +1,3 @@
-/* main.c - Synchronization demo */
-
 /********************************************************************************
  * Copyright (c) 2012-2014 Wind River Systems, Inc.
  *
@@ -25,6 +23,9 @@
 #include <zephyr/kernel.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/services/nus.h>
+
+/* STEP 3.1 - Include the header file of the Zephyr ADC API */
+#include <zephyr/drivers/adc.h>
 
 #include "pins_definitions.h"
 #include "water_valves.h"
@@ -67,8 +68,8 @@
 
 #define ULTRASONIC_SENSOR										0x80
 
-#define DEVICE_NAME				CONFIG_BT_DEVICE_NAME
-#define DEVICE_NAME_LEN			(sizeof(DEVICE_NAME) - 1)
+#define DEVICE_NAME													CONFIG_BT_DEVICE_NAME
+#define DEVICE_NAME_LEN											(sizeof(DEVICE_NAME) - 1)
 
 /********************************************************************************/
 //
@@ -91,7 +92,6 @@ static void timer2_init(void);
 static void set_conversion_factor(void);
 static void object_distance_proximity(uint32_t Distance, uint8_t Sensor) ;
 static void water_level_proximity(uint32_t Level, uint8_t Sensor) ;
-static void configure_saadc(void);
 static void timer0_handler(struct k_timer *dummy);
 // Add forward declaration of timer callback handler 
 static void battery_sample_timer_handler(struct k_timer *timer);
@@ -103,12 +103,13 @@ static void test_nrfx_systick_delay(void);
 static void configure_all_gpios(void);
 static int bt_init(void);
 static int bt_send(void);
+static int adc_init(void);
 
 /********************************************************************************
  *
  ********************************************************************************/
 // Declare the buffer to hold the SAAD sample value
-static int16_t sample;
+//static int16_t sample;
 // counter */
 static volatile uint32_t tCount = 0;
 static volatile uint32_t tCountTemp = 0;
@@ -135,6 +136,18 @@ typedef struct
 	
 } SensorReading;
 
+uint32_t count = 0;
+
+/* STEP 4.1 - Define a variable of type adc_sequence and a buffer of type uint16_t */
+int16_t buf;
+struct adc_sequence sequence = {
+	.buffer = &buf,
+	/* buffer size in bytes, not number of samples */
+	.buffer_size = sizeof(buf),
+	// Optional
+	//.calibrate = true,
+};
+
 /********************************************************************************
  *
  ********************************************************************************/
@@ -148,8 +161,8 @@ const struct device *gpio1_dev = DEVICE_DT_GET(DEVICE_GPIO1);
 // 
 const struct device *gpio2_dev = DEVICE_DT_GET(DEVICE_GPIO2);
 
-// Declare the struct to hold the configuration for the SAADC channel used to sample the battery voltage 
-static nrfx_saadc_channel_t channel = NRFX_SAADC_DEFAULT_CHANNEL_SE(NRF_SAADC_INPUT_AVDD, 0);
+/* STEP 3.2 - Define a variable of type adc_dt_spec for each channel */
+static const struct adc_dt_spec adc_channel = ADC_DT_SPEC_GET(DT_PATH(zephyr_user));
 
 /********************************************************************************
  *
@@ -300,66 +313,68 @@ static void start_timer(void)
  ********************************************************************************/
 void battery_sample_timer_handler(struct k_timer *timer) 
 {
-  // Trigger the sampling
-  nrfx_err_t err = nrfx_saadc_mode_trigger();
-  if(err != NRFX_SUCCESS) {
-    printk("nrfx_saadc_mode_trigger error: %08x", err);
-    return;
-  }
+  int err;
+	int val_mv;
 
-  // Calculate and print voltage 
-  int battery_voltage = ((600*6) * sample) / ((1<<12));
-	bat_volt = battery_voltage;
-	
-  //printk("SAADC sample: %d\n", sample);
-  printk("Battery Voltage: %d mV\n", bat_volt);
-	bat_low_status = true;
-}
-
-/******************************************************************************** 
- * 
- ********************************************************************************/
-static void configure_saadc(void) 
-{
-  // Connect ADC interrupt to nrfx interrupt handler 
-  IRQ_CONNECT(DT_IRQN(DT_NODELABEL(adc)), DT_IRQ(DT_NODELABEL(adc), priority), nrfx_isr, nrfx_saadc_irq_handler, 0);
-        
-  // Connect ADC interrupt to nrfx interrupt handler */
-  nrfx_err_t err = nrfx_saadc_init(DT_IRQ(DT_NODELABEL(adc), priority));
-  if(err != NRFX_SUCCESS) {
-      printk("nrfx_saadc_mode_trigger error: %08x\n", err);
-      return;
-  }
-
-  // Configure the SAADC channel
-  channel.channel_config.gain = NRF_SAADC_GAIN1_2;
-  //channel.channel_config.resistor_p = NRF_SAADC_AIN6;
-  //channel.channel_config.input_positive = NRF_SAADC_AIN6;
-  err = nrfx_saadc_channels_config(&channel, 1);
-  if(err != NRFX_SUCCESS) {
-		printk("nrfx_saadc_channels_config error: %08x\n", err);
-	  return;
+	/* STEP 5 - Read a sample from the ADC */
+	err = adc_read(adc_channel.dev, &sequence);
+	if (err < 0) 
+	{
+		LOG_ERR("Could not read (%d)", err);
+		//continue;
 	}
 
-  // Configure nrfx_SAADC driver in simple and blocking mode 
-  err = nrfx_saadc_simple_mode_set(BIT(0), NRF_SAADC_RESOLUTION_12BIT, NRF_SAADC_OVERSAMPLE_DISABLED, NULL);
-                                  
-  if(err != NRFX_SUCCESS) 
-  {
-    printk("nrfx_saadc_simple_mode_set error: %08x\n", err);
-    return;
-  }
-        
-  // Set buffer where sample will be stored 
-  err = nrfx_saadc_buffer_set(&sample, 1);
-  if(err != NRFX_SUCCESS) 
-  {
-    printk("nrfx_saadc_buffer_set error: %08x\n", err);
-    return;
-  }
+	val_mv = (int)buf;
+	LOG_INF("ADC reading[%u]: %s, channel %d: Raw: %d", count++, adc_channel.dev->name,
+	adc_channel.channel_id, val_mv);
 
-  // Start periodic timer for battery sampling 
+	/* STEP 6 - Convert raw value to mV*/
+	err = adc_raw_to_millivolts_dt(&adc_channel, &val_mv);
+	/* conversion to mV may not be supported, skip if not */
+	if (err < 0) 
+	{
+		LOG_WRN(" (value in mV not available)\n");
+	} 
+	else 
+	{
+		LOG_INF(" = %d mV", val_mv);
+	}
+	//k_sleep(K_MSEC(1000));
+}
+
+/********************************************************************************
+ *
+ ********************************************************************************/
+static int adc_init(void)
+{
+	int err;
+	
+	/* STEP 3.3 - validate that the ADC peripheral (SAADC) is ready */
+	if (!adc_is_ready_dt(&adc_channel)) 
+	{
+		LOG_ERR("ADC controller devivce %s not ready", adc_channel.dev->name);
+		return 0;
+	}
+
+	/* STEP 3.4 - Setup the ADC channel */
+	err = adc_channel_setup_dt(&adc_channel);
+	if (err < 0) 
+	{
+		LOG_ERR("Could not setup channel #%d (%d)", 0, err);
+		return 0;
+	}
+
+	/* STEP 4.2 - Initialize the ADC sequence */
+	err = adc_sequence_init_dt(&adc_channel, &sequence);
+	if (err < 0) 
+	{
+		LOG_ERR("Could not initalize sequnce");
+		return 0;
+	}
+	
+	// Start periodic timer for battery sampling 
 	k_timer_start(&battery_sample_timer, K_NO_WAIT, K_MSEC(BATTERY_SAMPLE_INTERVAL_MS));
+	return 1;
 }
 
 /********************************************************************************
@@ -750,7 +765,7 @@ static int bt_send(void)
 
 	//
 	err = bt_nus_send(NULL, water_level, strlen(water_level));
-	printk("Data send - Result: %d\n", err);
+	printk("1-Data send - Result: %d\n", err);
 
 	if (err < 0 && (err != -EAGAIN) && (err != -ENOTCONN)) {
 		return err;
@@ -759,7 +774,7 @@ static int bt_send(void)
 
 	//
 	err = bt_nus_send(NULL, water_valve_in_status, strlen(water_valve_in_status));
-	printk("Data send - Result: %d\n", err);
+	printk("2-Data send - Result: %d\n", err);
 
 	if (err < 0 && (err != -EAGAIN) && (err != -ENOTCONN)) {
 		return err;
@@ -768,7 +783,7 @@ static int bt_send(void)
 
 	//
 	err = bt_nus_send(NULL, water_valve_out_status, strlen(water_valve_out_status));
-	printk("Data send - Result: %d\n", err);
+	printk("3-Data send - Result: %d\n", err);
 
 	if (err < 0 && (err != -EAGAIN) && (err != -ENOTCONN)) {
 		return err;
@@ -777,12 +792,22 @@ static int bt_send(void)
 
 	//
 	err = bt_nus_send(NULL, water_flow_sensor, strlen(water_flow_sensor));
-	printk("Data send - Result: %d\n", err);
+	printk("4-Data send - Result: %d\n", err);
 
 	if (err < 0 && (err != -EAGAIN) && (err != -ENOTCONN)) {
 		return err;
 	}
-	return 0;
+
+	//
+	if (err < 0)
+	{
+		return err;
+	}
+	else 
+	{
+		return 0;
+	}
+	//return 0;
 }
 
 /********************************************************************************
@@ -790,26 +815,26 @@ static int bt_send(void)
  ********************************************************************************/
 static int are_devices_ready(void)
 {
-	int ret = 0;
+	int err = 0;
 	// 
-	ret = device_is_ready(gpio0_dev);
-	if (!ret) 
+	err = device_is_ready(gpio0_dev);
+	if (!err) 
 	{
-		return ret;
+		return err;
 	}
 	//
-	ret = device_is_ready(gpio1_dev); 
-	if (!ret) 
+	err = device_is_ready(gpio1_dev); 
+	if (!err) 
 	{
-		return ret;
+		return err;
 	}
 	//
-	ret = device_is_ready(gpio2_dev); 
-	if (!ret) 
+	err = device_is_ready(gpio2_dev); 
+	if (!err) 
 	{
-		return ret;
+		return err;
 	}
-	return ret;
+	return err;
 }
 
 /********************************************************************************
@@ -846,7 +871,7 @@ static void configure_all_gpios(void)
  ********************************************************************************/
 int main(void)
 {
-	int ret = 0;
+	int err = 0;
 	int blink_status = 0;
 	tCount = 0;
 	ARG_UNUSED(blink_status);
@@ -860,7 +885,7 @@ int main(void)
 	printk("Project in Rural Areas Application started, version: %s\n",	CONFIG_APP_VERSION);
 	
 	if(!are_devices_ready()) {
-		return ret;
+		return err;
 	}
 	
 	// configure
@@ -884,8 +909,8 @@ int main(void)
 	gpio_add_callback(gpio1_dev, &pir_cb_data);   
 
 	bt_init();
-	configure_saadc();   
-
+	adc_init();
+	
 	/*-------------------------------------------------------------------------
 	 *
 	 -------------------------------------------------------------------------*/ 
@@ -941,11 +966,21 @@ int main(void)
 			water_valve_in(2, 6);
 			bat_status_led(125, 6);
 			bat_low_status = false;
+		}    
+   
+		/*----------------------------------------------------------------------*/		
+		//  
+    err = bt_send();
+    if(err != 0) 
+		{
+			// bt le adv start
+			err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+			if (err) {
+				printk("Failed to start advertising: %d\n", err);
+				//return err;
+			}
 		}
 		  
-    //
-		bt_send();   
-   
 		// 
 		//k_msleep(SLEEP_TIME_MS * 2);
 	} 
