@@ -48,47 +48,51 @@ void water_valves_init(void)
 /********************************************************************************
  * @} water_valves_test
  ********************************************************************************/
-void water_valves_test(void) 
+void water_valves_test(uint32_t msleepTime, uint32_t valvesOnCount) 
 {
 	uint32_t i;
 	
-	for(i = 0; i < 5; i++) 
+	for(i = 0; i < valvesOnCount; i++) 
 	{
 		gpio_pin_set(wv_gpio2_dev, WATER_VALVE_IN, false);
 		gpio_pin_set(wv_gpio2_dev, WATER_VALVE_OUT, false);
-		k_msleep(SLEEP_TIME_MS);
+		k_msleep(msleepTime);
 		gpio_pin_set(wv_gpio2_dev, WATER_VALVE_IN, true);
 		gpio_pin_set(wv_gpio2_dev, WATER_VALVE_OUT, true);
-		k_msleep(SLEEP_TIME_MS);
+		k_msleep(msleepTime);
 	}
 }
 
 /********************************************************************************
  * @} water_valve_in
  ********************************************************************************/
-void water_valve_in(uint32_t WaterValveInCount, uint8_t SleepTime) 
+void water_valve_in(bool WaterValveInCount) 
 {
-	uint32_t i;
-	
-	for(i = 0; i < WaterValveInCount; i++) {
+	if(WaterValveInCount == ON) 
+	{
 		gpio_pin_set(wv_gpio2_dev, WATER_VALVE_IN, false);
-		k_msleep(WATER_VALVE_IN_ON_SLEEP_TIME * SleepTime);
+		gpio_pin_set(wv_gpio2_dev, GREEN_LED, true);
+	}
+	else 	
+	{
 		gpio_pin_set(wv_gpio2_dev, WATER_VALVE_IN, true);
-		k_msleep(WATER_VALVE_IN_ON_SLEEP_TIME);
+		gpio_pin_set(wv_gpio2_dev, GREEN_LED, false);
 	}
 }
 
 /********************************************************************************
  * @} water_valve_out
  ********************************************************************************/
-void water_valve_out(uint32_t WaterValveOutCount, uint8_t SleepTime) 
+void water_valve_out(bool WaterValveOutCount) 
 {
-	uint32_t i;
-	
-	for(i = 0; i < WaterValveOutCount; i++) {
+	if(WaterValveOutCount == ON) 
+	{
 		gpio_pin_set(wv_gpio2_dev, WATER_VALVE_OUT, false);
-		k_msleep(WATER_VALVE_IN_ON_SLEEP_TIME * SleepTime);
+	}
+	else 	
+	{
 		gpio_pin_set(wv_gpio2_dev, WATER_VALVE_OUT, true);
-		k_msleep(WATER_VALVE_IN_ON_SLEEP_TIME);
 	}
 }
+
+	

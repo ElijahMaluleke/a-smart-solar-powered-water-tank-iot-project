@@ -21,9 +21,9 @@ extern "C" {
 
 
 void water_valves_init(void);
-void water_valves_test(void); 
-void water_valve_in(uint32_t WaterValveInCount, uint8_t SleepTime);
-void water_valve_out(uint32_t WaterValveOutCount, uint8_t SleepTime);
+void water_valves_test(uint32_t msleepTime, uint32_t valvesOnCount); 
+void water_valve_in(bool WaterValveInCount);
+void water_valve_out(bool WaterValveInCount);
 
 #ifdef __cplusplus
 }

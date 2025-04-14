@@ -38,6 +38,7 @@
  ********************************************************************************/
 #define PIN_THREADS (IS_ENABLED(CONFIG_SMP) && IS_ENABLED(CONFIG_SCHED_CPU_MASK))
 
+
 /* size of stack area used by each thread */
 #define STACKSIZE 													1024
 
@@ -90,7 +91,7 @@ static bool get_object_ultrasonic_range_sensor(float* dist);
 static bool get_water_ultrasonic_range_sensor(float* dist);
 static void timer2_init(void);
 static void set_conversion_factor(void);
-static void object_distance_proximity(uint32_t Distance, uint8_t Sensor) ;
+//static void object_distance_proximity(uint32_t Distance, uint8_t Sensor) ;
 static void water_level_proximity(uint32_t Level, uint8_t Sensor) ;
 static void timer0_handler(struct k_timer *dummy);
 // Add forward declaration of timer callback handler 
@@ -104,6 +105,8 @@ static void configure_all_gpios(void);
 static int bt_init(void);
 static int bt_send(void);
 static int adc_init(void);
+static void object_distance_and_pir_timer_expiry_function(struct k_timer *timer_id);
+static void water_level_timer_sensors_and_water_flow_expiry_function(struct k_timer *timer_id);
 
 /********************************************************************************
  *
@@ -120,12 +123,18 @@ static uint8_t prescaler = 1;
 static uint16_t comp1 = 500;
 // 
 static int bat_volt = 0;
+static bool object_distance_status = false;
+static bool water_level_status = false;
+static bool water_level_sensor_status = false;
+static bool water_tank_status = false; 
+static bool water_flow_status = false;
 static bool bat_low_status = false;
 static bool sensors_status = true;
 static bool pir_status = false;
 uint32_t object_distance_sensor = 0;
 uint32_t water_level_sensor = 0;
-
+int val_mv;
+ 
 /********************************************************************************
  * Define the data type of the message
  ********************************************************************************/
@@ -153,6 +162,8 @@ struct adc_sequence sequence = {
  ********************************************************************************/
 static struct k_timer timer_sensors;
 static struct gpio_callback pir_cb_data;
+static struct k_timer object_distance_and_pir;
+static struct k_timer water_level_sensors_and_water_flow;
 
 // 
 const struct device *gpio0_dev = DEVICE_DT_GET(DEVICE_GPIO0);
@@ -161,7 +172,7 @@ const struct device *gpio1_dev = DEVICE_DT_GET(DEVICE_GPIO1);
 // 
 const struct device *gpio2_dev = DEVICE_DT_GET(DEVICE_GPIO2);
 
-/* STEP 3.2 - Define a variable of type adc_dt_spec for each channel */
+// STEP 3.2 - Define a variable of type adc_dt_spec for each channel
 static const struct adc_dt_spec adc_channel = ADC_DT_SPEC_GET(DT_PATH(zephyr_user));
 
 /********************************************************************************
@@ -170,7 +181,7 @@ static const struct adc_dt_spec adc_channel = ADC_DT_SPEC_GET(DT_PATH(zephyr_use
 
 // Define the battery sample timer instance 
 K_TIMER_DEFINE(battery_sample_timer, battery_sample_timer_handler, NULL);
-//
+// a smart solar powered water tank
 LOG_MODULE_REGISTER(a_smart_white_cane, CONFIG_A_SMART_WHITE_CANE_LOG_LEVEL);
 
 /********************************************************************************
@@ -270,7 +281,7 @@ static void timer2_init(void)
 	NRF_TIMER20->SHORTS = TIMER_SHORTS_COMPARE1_CLEAR_Enabled << TIMER_SHORTS_COMPARE1_CLEAR_Pos;
 	NRF_TIMER20->INTENSET = TIMER_INTENSET_COMPARE1_Enabled << TIMER_INTENSET_COMPARE1_Pos;
 	set_conversion_factor();
-	printf("timer tick = %f us\n", (double)countToUs);
+	//printf("timer tick = %f us\n", (double)countToUs);
 	NRF_TIMER20->TASKS_START = 1;
 }
 
@@ -308,36 +319,71 @@ static void start_timer(void)
 	flip = !flip;
 }*/
 
+
+/********************************************************************************
+ * Define a variable of type static struct gpio_callback
+ ********************************************************************************/
+static void object_distance_and_pir_timer_expiry_function(struct k_timer *timer_id)
+{
+	if((pir_status == true)&&(object_distance_status == true))
+	{
+		water_valve_out(ON);
+		k_timer_start(&object_distance_and_pir, K_SECONDS(30), K_NO_WAIT);
+	} 
+	else 
+	{
+		pir_status = false;
+		object_distance_status = false;
+		water_valve_out(OFF);
+	}
+}
+
+/********************************************************************************
+ *
+ ********************************************************************************/
+static void water_level_timer_sensors_and_water_flow_expiry_function(struct k_timer *timer_id)
+{
+	if((water_level_status == true)&&(water_level_sensor_status == true)) 
+	{
+		water_valve_in(ON);
+		k_timer_start(&water_level_sensors_and_water_flow, K_SECONDS(5), K_NO_WAIT);
+	} 
+	else 
+	{
+		water_level_status = false;
+		water_level_sensor_status = false;
+		water_valve_in(OFF); 
+	}
+}
+
 /******************************************************************************** 
  * Implement timer callback handler function 
  ********************************************************************************/
 void battery_sample_timer_handler(struct k_timer *timer) 
 {
   int err;
-	int val_mv;
-
-	/* STEP 5 - Read a sample from the ADC */
+	
+	// Read a sample from the ADC
 	err = adc_read(adc_channel.dev, &sequence);
 	if (err < 0) 
 	{
-		LOG_ERR("Could not read (%d)", err);
+		printk("Could not read (%d)\n", err);
 		//continue;
 	}
 
 	val_mv = (int)buf;
-	LOG_INF("ADC reading[%u]: %s, channel %d: Raw: %d", count++, adc_channel.dev->name,
-	adc_channel.channel_id, val_mv);
+	printk("ADC reading[%u]: %s, channel %d: Raw: %d\n", count++, adc_channel.dev->name, adc_channel.channel_id, val_mv);
 
-	/* STEP 6 - Convert raw value to mV*/
+	// Convert raw value to mV*
 	err = adc_raw_to_millivolts_dt(&adc_channel, &val_mv);
-	/* conversion to mV may not be supported, skip if not */
+	// conversion to mV may not be supported, skip if not
 	if (err < 0) 
 	{
-		LOG_WRN(" (value in mV not available)\n");
+		printk(" (Value in mV not available)\n");
 	} 
 	else 
 	{
-		LOG_INF(" = %d mV", val_mv);
+		printk("AIN6 Voltage = %d mV\n", val_mv);
 	}
 	//k_sleep(K_MSEC(1000));
 }
@@ -349,26 +395,26 @@ static int adc_init(void)
 {
 	int err;
 	
-	/* STEP 3.3 - validate that the ADC peripheral (SAADC) is ready */
+	// validate that the ADC peripheral (SAADC) is ready
 	if (!adc_is_ready_dt(&adc_channel)) 
 	{
-		LOG_ERR("ADC controller devivce %s not ready", adc_channel.dev->name);
+		printk("ADC controller devivce %s not ready\n", adc_channel.dev->name);
 		return 0;
 	}
 
-	/* STEP 3.4 - Setup the ADC channel */
+	// Setup the ADC channel
 	err = adc_channel_setup_dt(&adc_channel);
 	if (err < 0) 
 	{
-		LOG_ERR("Could not setup channel #%d (%d)", 0, err);
+		printk("Could not setup channel #%d (%d)\n", 0, err);
 		return 0;
 	}
 
-	/* STEP 4.2 - Initialize the ADC sequence */
+	// Initialize the ADC sequence
 	err = adc_sequence_init_dt(&adc_channel, &sequence);
 	if (err < 0) 
 	{
-		LOG_ERR("Could not initalize sequnce");
+		printk("Could not initalize sequnce\n");
 		return 0;
 	}
 	
@@ -440,7 +486,7 @@ static bool get_water_ultrasonic_range_sensor(float* dist)
 /********************************************************************************
  * @} object_proximity
  ********************************************************************************/
-static void object_distance_proximity(uint32_t Distance, uint8_t Sensor) 
+/*static void object_distance_proximity(uint32_t Distance, uint8_t Sensor) 
 {
 	//
 	switch(Sensor) 
@@ -448,33 +494,34 @@ static void object_distance_proximity(uint32_t Distance, uint8_t Sensor)
 		case ULTRASONIC_SENSOR:
 		{
 			if((Distance >= 0)&&(Distance <= 10)){
-				water_valve_out(1 , 18);
+				object_distance_status = true;
 			}
 			else if((Distance >= 10)&&(Distance <= 20)){
-				water_valve_out(1 , 16);
+				object_distance_status = true;
 			}
 			else if((Distance >= 20)&&(Distance <= 30)){
-				water_valve_out(1 , 14);
+				object_distance_status = true;
 			}
 			else if((Distance >= 30)&&(Distance <= 40)){
-				water_valve_out(1 , 12);
+				object_distance_status = true;
 			}
 			else if((Distance >= 40)&&(Distance <= 50)){
-				water_valve_out(1 , 10);
+				object_distance_status = true;
 			}
 			else if((Distance >= 60)&&(Distance <= 60)){
-				water_valve_out(1 , 8);
+				object_distance_status = true;
 			}
 			else if((Distance >= 70)&&(Distance <= 70)){
-				water_valve_out(1 , 6);
+				object_distance_status = true;
 			}
 			else if((Distance >= 80)&&(Distance <= 90)){
-				water_valve_out(1 , 4);
+				object_distance_status = true;
 			}
 			if((Distance >= 90)&&(Distance <= 100)){
-				water_valve_out(1 , 18);
+				object_distance_status = true;
 			}
 			else{
+				object_distance_status = false;
 			}
 		}
 		break;
@@ -482,7 +529,7 @@ static void object_distance_proximity(uint32_t Distance, uint8_t Sensor)
 		default:
 		break;
 	}	
-}
+}*/
 
 /********************************************************************************
  * @} object_proximity
@@ -495,33 +542,34 @@ static void water_level_proximity(uint32_t Level, uint8_t Sensor)
 		case ULTRASONIC_SENSOR:
 		{
 			if((Level >= 0)&&(Level <= 10)){
-				water_valve_in(1 , 18);
+				water_level_status = true;
 			}
 			else if((Level >= 10)&&(Level <= 20)){
-				water_valve_in(1 , 16);
+				water_level_status = true;
 			}
 			else if((Level >= 20)&&(Level <= 30)){
-				water_valve_in(1 , 14);
+				water_level_status = true;
 			}
 			else if((Level >= 30)&&(Level <= 40)){
-				water_valve_in(1 , 12);
+				water_level_status = true;
 			}
 			else if((Level >= 40)&&(Level <= 50)){
-				water_valve_in(1 , 10);
+				water_level_status = true;
 			}
 			else if((Level >= 60)&&(Level <= 60)){
-				water_valve_in(1 , 8);
+				water_level_status = true;
 			}
 			else if((Level >= 70)&&(Level <= 70)){
-				water_valve_in(1 , 6);
+				water_level_status = true;
 			}
 			else if((Level >= 80)&&(Level <= 90)){
-				water_valve_in(1 , 4);
+				water_level_status = true;
 			}
 			if((Level >= 90)&&(Level <= 100)){
-				water_valve_in(1 , 18);
+				water_level_status = true;
 			}
 			else{
+				water_level_status = false;
 			}
 		}
 		break;
@@ -573,76 +621,6 @@ static void bat_status_led(uint32_t msleep_time, uint8_t BlinkCount)
 	}
 }
 
-/********************************************************************************
- * @param my_name      thread identification string
- * @param my_sem       thread's own semaphore
- * @param other_sem    other thread's semaphore
- ********************************************************************************/
-void hello_loop(const char *my_name, struct k_sem *my_sem, struct k_sem *other_sem)
-{
-	const char *tname;
-	uint8_t cpu;
-	struct k_thread *current_thread;
-
-	while (1) 
-	{
-		// take my semaphore 
-		k_sem_take(my_sem, K_FOREVER);
-
-		current_thread = k_current_get();
-		tname = k_thread_name_get(current_thread);
-		#if CONFIG_SMP
-			cpu = arch_curr_cpu()->id;
-		#else
-			cpu = 0;
-		#endif
-		// say "hello"
-		if (tname == NULL) {
-			printk("%s: Hello World from cpu %d on %s!\n", my_name, cpu, CONFIG_BOARD);
-		} else {
-			printk("%s: Hello World from cpu %d on %s!\n", tname, cpu, CONFIG_BOARD);
-		}
-
-		/* wait a while, then let other thread have a turn */
-		k_busy_wait(THREAD_YIELD_TIME);
-		k_msleep(SLEEPTIME);
-		k_sem_give(other_sem);
-	}
-}
-
-// define semaphores 
-K_SEM_DEFINE(thread_a_sem, 1, 1);	// starts off "available" 
-K_SEM_DEFINE(thread_b_sem, 0, 1);	// starts off "not available" 
-
-/********************************************************************************
- * thread_a is a dynamic thread that is spawned in main
- ********************************************************************************/
-void thread_a_entry_point(void *dummy1, void *dummy2, void *dummy3)
-{
-	ARG_UNUSED(dummy1);
-	ARG_UNUSED(dummy2);
-	ARG_UNUSED(dummy3);
-
-	// invoke routine to ping-pong hello messages with thread_b 
-	hello_loop(__func__, &thread_a_sem, &thread_b_sem);
-}
-K_THREAD_STACK_DEFINE(thread_a_stack_area, STACKSIZE);
-static struct k_thread thread_a_data;
-
-/********************************************************************************
- * thread_b is a static thread spawned immediately
- ********************************************************************************/
-void thread_b_entry_point(void *dummy1, void *dummy2, void *dummy3)
-{
-	ARG_UNUSED(dummy1);
-	ARG_UNUSED(dummy2);
-	ARG_UNUSED(dummy3);
-
-	// invoke routine to ping-pong hello messages with thread_a 
-	hello_loop(__func__, &thread_b_sem, &thread_a_sem);
-}
-K_THREAD_DEFINE(thread_b, STACKSIZE, thread_b_entry_point, NULL, NULL, NULL, PRIORITY, 0, 0);
-extern const k_tid_t thread_b;
 	
 /********************************************************************************
  * test_nrfx_systick_delay
@@ -654,19 +632,19 @@ static void test_nrfx_systick_delay(void)
 	//
 	for(i = 0; i < 5; i++) 
 	{
-		gpio_pin_set(gpio2_dev, LED_ONE, true);
-		gpio_pin_set(gpio1_dev, LED_TWO, true);
-		gpio_pin_set(gpio2_dev, LED_THREE, true);
-		gpio_pin_set(gpio1_dev, LED_FOUR, true);
+		gpio_pin_set(gpio2_dev, LED_ONE, false);
+		gpio_pin_set(gpio1_dev, LED_TWO, false);
+		gpio_pin_set(gpio2_dev, LED_THREE, false);
+		gpio_pin_set(gpio1_dev, LED_FOUR, false);
 		
 		for(j = 0; j < 1000; j++) 
 		{
 			nrfx_systick_delay_us(1000);
 		}
-		gpio_pin_set(gpio2_dev, LED_ONE, false);
-		gpio_pin_set(gpio1_dev, LED_TWO, false);
-		gpio_pin_set(gpio2_dev, LED_THREE, false);
-		gpio_pin_set(gpio1_dev, LED_FOUR, false);
+		gpio_pin_set(gpio2_dev, LED_ONE, true);
+		gpio_pin_set(gpio1_dev, LED_TWO, true);
+		gpio_pin_set(gpio2_dev, LED_THREE, true);
+		gpio_pin_set(gpio1_dev, LED_FOUR, true);
 		
 		for(j = 0; j < 1000; j++) 
 		{
@@ -684,16 +662,16 @@ static void flash_all_leds(void)
 	//
 	for(i = 0; i < 5; i++) 
 	{
-		gpio_pin_set(gpio2_dev, LED_ONE, true);
-		gpio_pin_set(gpio1_dev, LED_TWO, true);
-		gpio_pin_set(gpio2_dev, LED_THREE, true);
-		gpio_pin_set(gpio1_dev, LED_FOUR, true);
-		k_msleep(SLEEP_TIME_MS);
 		gpio_pin_set(gpio2_dev, LED_ONE, false);
 		gpio_pin_set(gpio1_dev, LED_TWO, false);
 		gpio_pin_set(gpio2_dev, LED_THREE, false);
 		gpio_pin_set(gpio1_dev, LED_FOUR, false);
-		k_msleep(SLEEP_TIME_MS);
+		k_msleep(SLEEP_TIME_MS / 4);
+		gpio_pin_set(gpio2_dev, LED_ONE, true);
+		gpio_pin_set(gpio1_dev, LED_TWO, true);
+		gpio_pin_set(gpio2_dev, LED_THREE, true);
+		gpio_pin_set(gpio1_dev, LED_FOUR, true);
+		k_msleep(SLEEP_TIME_MS / 4);
 	} 
 }
 
@@ -867,6 +845,77 @@ static void configure_all_gpios(void)
 }
 
 /********************************************************************************
+ * @param my_name      thread identification string
+ * @param my_sem       thread's own semaphore
+ * @param other_sem    other thread's semaphore
+ ********************************************************************************/
+void hello_loop(const char *my_name, struct k_sem *my_sem, struct k_sem *other_sem)
+{
+	const char *tname;
+	uint8_t cpu;
+	struct k_thread *current_thread;
+
+	while (1) 
+	{
+		// take my semaphore 
+		k_sem_take(my_sem, K_FOREVER);
+
+		current_thread = k_current_get();
+		tname = k_thread_name_get(current_thread);
+		#if CONFIG_SMP
+			cpu = arch_curr_cpu()->id;
+		#else
+			cpu = 0;
+		#endif
+		// say "hello"
+		if (tname == NULL) {
+			printk("%s: Hello World from cpu %d on %s!\n", my_name, cpu, CONFIG_BOARD);
+		} else {
+			printk("%s: Hello World from cpu %d on %s!\n", tname, cpu, CONFIG_BOARD);
+		}
+
+		/* wait a while, then let other thread have a turn */
+		k_busy_wait(THREAD_YIELD_TIME);
+		k_msleep(SLEEPTIME);
+		k_sem_give(other_sem);
+	}
+}
+
+// define semaphores 
+K_SEM_DEFINE(thread_a_sem, 1, 1);	// starts off "available" 
+K_SEM_DEFINE(thread_b_sem, 0, 1);	// starts off "not available" 
+
+/********************************************************************************
+ * thread_a is a dynamic thread that is spawned in main
+ ********************************************************************************/
+void thread_a_entry_point(void *dummy1, void *dummy2, void *dummy3)
+{
+	ARG_UNUSED(dummy1);
+	ARG_UNUSED(dummy2);
+	ARG_UNUSED(dummy3);
+
+	// invoke routine to ping-pong hello messages with thread_b 
+	hello_loop(__func__, &thread_a_sem, &thread_b_sem);
+}
+K_THREAD_STACK_DEFINE(thread_a_stack_area, STACKSIZE);
+static struct k_thread thread_a_data;
+
+/********************************************************************************
+ * thread_b is a static thread spawned immediately
+ ********************************************************************************/
+void thread_b_entry_point(void *dummy1, void *dummy2, void *dummy3)
+{
+	ARG_UNUSED(dummy1);
+	ARG_UNUSED(dummy2);
+	ARG_UNUSED(dummy3);
+
+	// invoke routine to ping-pong hello messages with thread_a 
+	hello_loop(__func__, &thread_b_sem, &thread_a_sem);
+}
+K_THREAD_DEFINE(thread_b, STACKSIZE, thread_b_entry_point, NULL, NULL, NULL, PRIORITY, 0, 0);
+extern const k_tid_t thread_b;
+	
+/********************************************************************************
  *
  ********************************************************************************/
 int main(void)
@@ -890,6 +939,20 @@ int main(void)
 	
 	// configure
 	configure_all_gpios();
+	
+	// 
+	/*for(;;)  
+	{     
+    gpio_pin_set(gpio2_dev, OLED_I2C_SCL, true);
+		gpio_pin_set(gpio2_dev, OLED_I2C_SDL, true);
+		printk("ON\n");
+		k_msleep(SLEEP_TIME_MS);
+		gpio_pin_set(gpio2_dev, OLED_I2C_SCL, false);
+		gpio_pin_set(gpio2_dev, OLED_I2C_SDL, false);
+		printk("OFF\n");
+		k_msleep(SLEEP_TIME_MS);
+	}*/    
+	  
 	water_valves_init();
 	nrfx_systick_init();
 	printk("Timer2 Init\n");
@@ -897,7 +960,10 @@ int main(void)
 	// test
 	test_nrfx_systick_delay();
 	beep(5, SLEEP_TIME_MS, SLEEP_TIME_MS);
-	water_valves_test(); 
+	water_valves_test(1000, 1);
+	flash_all_leds();          
+  
+	
 
 	// set up PIR MODULE pins 
 	gpio_pin_configure(gpio1_dev, PIR_MODULE_PIN, GPIO_INPUT | GPIO_PULL_DOWN);	//
@@ -908,9 +974,12 @@ int main(void)
 	// Add the callback function by calling gpio_add_callback() 
 	gpio_add_callback(gpio1_dev, &pir_cb_data);   
 
+	// 
 	bt_init();
 	adc_init();
-	
+	k_timer_init(&object_distance_and_pir, object_distance_and_pir_timer_expiry_function, NULL);   
+	k_timer_init(&water_level_sensors_and_water_flow, water_level_timer_sensors_and_water_flow_expiry_function, NULL);    
+ 	 
 	/*-------------------------------------------------------------------------
 	 *
 	 -------------------------------------------------------------------------*/ 
@@ -918,18 +987,19 @@ int main(void)
 	{  
 		//  
 		uint8_t ultrasonic_sensor = 0x80;   
-
+   
+		printk("\n"); 
  		// get distance ultrasonic sensor
 		if(get_object_ultrasonic_range_sensor(&dist_ultrasonic))  
 		{
 			object_distance_sensor = (uint32_t)dist_ultrasonic;
-			printf("Object Distance = %d cm\n", object_distance_sensor);
-			object_distance_proximity(object_distance_sensor, ultrasonic_sensor);
+			printk("Object Distance = %d cm\n", object_distance_sensor);
+			//object_distance_proximity(object_distance_sensor, ultrasonic_sensor);
 		}
 		else 
  		{
 			object_distance_sensor = (uint32_t)dist_ultrasonic;
-			printf("Object Distance < 400.0 %d cm\n", object_distance_sensor);
+			printk("Object Distance < 400.0 %d cm\n", object_distance_sensor);
 		}      
 
  		/*----------------------------------------------------------------------*/
@@ -939,50 +1009,86 @@ int main(void)
 		if(get_water_ultrasonic_range_sensor(&dist_ultrasonic))  
 		{
 			water_level_sensor = (uint32_t)dist_ultrasonic;
-			printf("Water Level = %d cm\n", water_level_sensor);
+			printk("Water Level = %d cm\n", water_level_sensor);
 			water_level_proximity(water_level_sensor, ultrasonic_sensor);
 		}
 		else 
  		{
 			water_level_sensor = (uint32_t)dist_ultrasonic;
-			printf("Water Level < 400.0 %d cm\n", water_level_sensor);
+			printk("Water Level < 400.0 %d cm\n", water_level_sensor);
 		}       
  
 		/*----------------------------------------------------------------------*/
-		// pir status
-		if(pir_status)  
-		{
-			pir_status = false;
-			gpio_pin_set(gpio2_dev, PIR_MODULE_LED, true);
+		// pir status and object distance sensor
+		if((pir_status == true) && (object_distance_sensor <= 50))  
+		{	    
+    	if(pir_status == true)
+			{	            
+				water_valve_out(ON);
+				k_timer_start(&object_distance_and_pir, K_SECONDS(30), K_NO_WAIT);
+				pir_status = false;
+				printk("Outlet Water Valve Open\n");   
+      }   
+    	else 
+			{       
+ 				water_valve_out(OFF);
+				pir_status = false;
+				object_distance_status = false;    
+      	printk("Outlet Water Valve Closed\n");    
+			}    
+    	//
+			gpio_pin_set(gpio1_dev, PIR_MODULE_LED, false);
 			k_msleep(SLEEP_TIME_MS);
-			gpio_pin_set(gpio2_dev, PIR_MODULE_LED, false);  
-			k_msleep(SLEEP_TIME_MS);
+			gpio_pin_set(gpio1_dev, PIR_MODULE_LED, true);  
+			k_msleep(SLEEP_TIME_MS);          
 		}    
     
 		/*----------------------------------------------------------------------*/		
 		// bat volt
 		if((bat_volt <= 1250) && (bat_low_status == true)) {
-			printf("Battery Low = %d mV\n", bat_volt);
-			water_valve_in(2, 6);
+			printk("Battery Low = %d mV\n", bat_volt);
+			//water_valve_in(2, 6);
 			bat_status_led(125, 6);
 			bat_low_status = false;
 		}    
    
+		/*----------------------------------------------------------------------*/		
+		// Water Level Sensor
+		if((val_mv <= 50) && (water_level_sensor <= 30))     
+   	{
+			printk("Water Level Sensor = %d.%d V\n", (val_mv / 1000),(val_mv % 1000));
+			//beep(2, (SLEEP_TIME_MS / 2), (SLEEP_TIME_MS / 2));    
+   		water_level_sensor_status = true;    
+   		water_valve_in(OFF);    
+   		printk("Inlet Water Valve Closed\n"); 
+		}    
+        
+    water_flow_status = WATER_FLOWING;
+  	/*----------------------------------------------------------------------*/		
+		// Water Level Sensor
+		if((val_mv >= 500) && (water_level_sensor >= 30) && (water_flow_status == WATER_FLOWING))     
+   	{
+			printk("Water Level Sensor = %d.%d V\n", (val_mv / 1000),(val_mv % 1000));
+			beep(2, (SLEEP_TIME_MS / 2), (SLEEP_TIME_MS / 2));    
+   		water_level_sensor_status = true;    
+   		water_valve_in(ON);    
+   		printk("Inlet Water Valve Open\n");  
+		}    
+    
 		/*----------------------------------------------------------------------*/		
 		//  
     err = bt_send();
     if(err != 0) 
 		{
 			// bt le adv start
-			err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+			/*err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
 			if (err) {
 				printk("Failed to start advertising: %d\n", err);
 				//return err;
-			}
+			}*/
 		}
-		  
-		// 
-		//k_msleep(SLEEP_TIME_MS * 2);
+		printk("\n:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::"); 
+		printk("\n@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");   
 	} 
 
 	/*-------------------------------------------------------------------------

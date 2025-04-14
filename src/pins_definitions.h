@@ -83,10 +83,15 @@
 #define WATER_FLOW_SENSOR			PORT_P2_PIN04 //  
 // water level sensor
 //#define WATER_LEVEL_SENSOR			PORT_P2_PIN05 //
+   
 // oled display pins
-#define OLED_I2C_SCL  				PORT_P2_PIN06 //
-#define OLED_I2C_SDL  				PORT_P2_PIN08 // 
- 
+//#define OLED_I2C_SCL  				PORT_P1_PIN02 // OLED_I2C_SCL 
+//#define OLED_I2C_SDL  				PORT_P1_PIN03 // OLED_I2C_SDL    
+  
+// oled display pins
+#define OLED_I2C_SCL  				PORT_P2_PIN06 // ( Trace CLK)   
+#define OLED_I2C_SDL  				PORT_P2_PIN08 // ( Trace [1] )
+  
 //#define PORT_P0_PIN04 // ( BUTTON 3 )  
 //#define PORT_P1_PIN08 // ( BUTTON 2 )
 //#define PORT_P1_PIN09 // ( BUTTON 1 ) 
@@ -110,8 +115,29 @@
 
 #define SENSORS_STATUS_LED	    	LED_ONE   // 
 #define BAT_STATUS_LED          	LED_TWO   // 
-#define PIR_MODULE_LED				LED_THREE // 
-#define USER_LED                	LED_THREE // 
+#define USER_LED					LED_THREE // 
+#define PIR_MODULE_LED              LED_FOUR //   
 
+/********************************************************************************/
+//  
+ 
+
+#define RED_LED	    	            LED_ONE   // 
+#define YELLOW_LED          	    LED_TWO   // 
+#define GREEN_LED				    LED_THREE // 
+#define BLUE_LED                	LED_FOUR //   
+  
+/********************************************************************************/
+//  
+ 
+#define ON 							false
+#define OFF							true
+ 
+#define NOT_WATER_FLOWING 			false
+#define WATER_FLOWING				true
+ 
+//water_tank_status 
+#define WATER_TANK_EMPTY 			false
+#define WATER_TANK_FULL				true
 // 
 /********************************************************************************/ 
